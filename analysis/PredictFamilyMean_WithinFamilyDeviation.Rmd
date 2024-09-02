@@ -1,0 +1,315 @@
+---
+title: "Set up biparental populations in AlphaSimR"
+author: 
+  name: "Jean-Luc Jannink"
+  affiliation: "USDA-ARS / Cornell"
+date: "June 10, 2024"
+output:
+  html_document:
+    fig_caption: yes
+    fig_height: 6
+    fig_width: 12
+    highlight: haddock
+    theme: cosmo
+    toc: yes
+    toc_float:
+      collapsed: no
+      toc_depth: 2
+editor_options: 
+  chunk_output_type: console
+---
+  
+<style>
+pre {
+  overflow-x: auto;
+}
+pre code {
+  word-wrap: normal;
+  white-space: pre;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+knitr::opts_chunk$set(message=FALSE)
+knitr::opts_chunk$set(cache=FALSE)
+```
+
+# Preliminaries
+
+### Rmarkdown  
+Here is a [cheatsheet](https://rmarkdown.rstudio.com/lesson-15.html)  
+
+### Objectives  
+0. Use AlphaSimR to  
+  i) Simulate a wheat population using the runMacs coalescent  
+  ii) Make a biparental population and a PCA plot with it  
+  
+1. Reproducible scripting  
+  i) The main README.md file should contain information about the conditions under which the script was run  
+  ii) Load and document the packages used, 
+  set the random seed, 
+  set and document the parameter values that will affect the script output  
+  iii) Use the directory structure from `workflowr`  
+  iv) Use the package `here` to make file locations relative to the base project folder  
+
+2. AlphaSimR  
+Some `AlphaSimR` vignettes:  
+Simulate a very simple mass selection program:  
+[introduction](https://cran.r-project.org/web/packages/AlphaSimR/vignettes/intro.html)  
+How `AlphaSimR` simulates traits:  
+[deep dive](https://cran.r-project.org/web/packages/AlphaSimR/vignettes/traits.pdf)  
+
+#### Load packages first  
+```{r load packages, message=TRUE}
+packages_used <- c("AlphaSimR", "tidyverse", "workflowr", "here", "rrBLUP")
+ip <- installed.packages()
+all_packages_installed <- TRUE
+for (package in packages_used){
+  if (!(package %in% ip[,"Package"])){
+    print(paste("Please install package", package))
+    all_packages_installed <- FALSE
+  }
+}#END packages_used
+if (!all_packages_installed) stop("Need to install packages")
+
+library(tidyverse)
+```
+
+#### Set file locations relative to the project folder using `here`  
+```{r set here path}
+here::i_am("analysis/PredictFamilyMean_WithinFamilyDeviation.Rmd")
+```
+There are two functions I use in the `here` package: `here::i_am` and `here::here`.  
+
+#### Document packages used (sessionInfo)  
+```{r print Session Info}
+print(utils::sessionInfo())
+```
+Hyperlink the [README file](README.md) to the report.  That makes it easy to find.  
+
+#### Set random seed  
+```{r set random seed}
+random_seed <- 45678
+set.seed(random_seed)
+```
+
+#### Script parameters  
+If the behavior of your script depends on parameters that you set, 
+initialize them early on.  
+```{r simulation parameters}
+nChr <- 10 # Number of chromosomes
+nSnpPerChr <- 100 # Number of segregating sites _per chromosome_
+nQTLperChr <- 10 # Vary this parameter to get oligo- versus poly- genic traits
+
+nFounders <- 1000
+nProgeny <- 100
+```
+
+#### AlphaSimR population  
+```{r Make founder population}
+# Create haplotypes for founder population of outbred individuals
+# Note: default effective population size for runMacs is 100
+founderHaps <- AlphaSimR::runMacs(species="WHEAT", nInd=nFounders, nChr=nChr, 
+                                  segSites=nSnpPerChr+nQTLperChr)
+
+# New global simulation parameters from founder haplotypes
+SP <- AlphaSimR::SimParam$new(founderHaps)
+SP$restrSegSites(nQTLperChr, nSnpPerChr, overlap=FALSE)
+SP$addSnpChip(nSnpPerChr)
+
+# Additive trait architecture
+# By default, the genetic variance will be 1
+SP$addTraitA(nQtlPerChr=nQTLperChr)
+
+# Create a new population of founders
+founders <- AlphaSimR::newPop(founderHaps, simParam=SP)
+```
+
+
+```{r Make biparental family}
+# Two parents at random
+randomPair <- sample(nFounders, 2, replace=FALSE)
+randParents <- founders[randomPair]
+
+crossPlan <- matrix(1:2, ncol=2)
+f1_pop <- AlphaSimR::makeCross(randParents, crossPlan, nProgeny=nProgeny)
+```
+
+#### Make PCA, choose 2 parents at random, make progeny, add them to PCA  
+Here you take the within-family SNPs and apply the centering and rotation
+of the full population.  
+```{r Make PCA with the segregating sites of founders}
+snpData <- AlphaSimR::pullSnpGeno(founders)
+pca <- stats::prcomp(snpData)
+plot(pca$x[, 1:2], pch=16)
+
+f1SnpData <- AlphaSimR::pullSnpGeno(f1_pop)
+centF1SnpData <- f1SnpData - matrix(1, nrow=nProgeny, ncol=1) %*% pca$center
+f1_pca <- centF1SnpData %*% pca$rotation[, 1:2]
+points(f1_pca, pch=16, col="blue")
+points(pca$x[randomPair, 1:2], pch=16, col="red")
+
+# Same thing but include the progeny with the parents when you make the PCA
+allIndSnp <- rbind(snpData, f1SnpData)
+pcaAllInd <- stats::prcomp(allIndSnp)
+plot(pcaAllInd$x[, 1:2], pch=16)
+
+points(pcaAllInd$x[nFounders + 1:nProgeny, 1:2], pch=16, col="blue")
+points(pcaAllInd$x[randomPair, 1:2], pch=16, col="red")
+```
+
+#### Train prediction on the full population and predict the family
+```{r Within Family Accuracy}
+source(here::here("code", "genomicPredictionFunction.R"))
+nRepeat <- 50
+allAns <- NULL
+for (nTrain in c(50, 100, 200, 400, 800)){
+  ansFam <- NULL
+  for (i in 1:nRepeat){
+    # Progeny in a biparental family
+    trainInd <- sample(nFounders, nTrain, replace=FALSE)
+    trainPop <- founders[trainInd]
+    trainPop <- AlphaSimR::setPheno(trainPop, H2=0.5)
+    # Parents _not_ in the training population
+    randomPair <- sample(setdiff(1:nFounders, trainInd), 2, replace=FALSE)
+    randParents <- founders[randomPair]
+    crossPlan <- matrix(1:2, ncol=2)
+    f1_pop <- AlphaSimR::makeCross(randParents, crossPlan, nProgeny=nProgeny)
+    trueFamMean <- mean(AlphaSimR::gv(randParents))
+    trueDevFromMean <- AlphaSimR::gv(f1_pop) - trueFamMean
+    gBLUP <- genPred(trainPop, c(randParents, f1_pop))[-(1:nTrain)]
+    gBLUPpar <- gBLUP[1:2]
+    gBLUP_F1 <- gBLUP[-(1:2)]
+    predDevFromMean <- gBLUP_F1 - mean(gBLUPpar)
+    cat("Fam", i, nTrain, round(cor(cbind(gBLUP_F1, predDevFromMean),
+                                    c(trueDevFromMean)), 3), "\n")
+    ansFam <- rbind(ansFam, nTrain, 
+                    cor(cbind(gBLUP_F1, predDevFromMean), c(trueDevFromMean)))
+  }
+  allAns <- rbind(allAns, ansFam)
+}
+colnames(allAns) <- c("nTrain", "corTotDev", "corDevDev")
+boxplot(corTotDev ~ nTrain, data=allAns)
+boxplot(corDevDev ~ nTrain, data=allAns)
+write_rds(list(allAns, allVar), here::here("output", "ResultsTPsize.rds"))
+
+allAns <- read_rds(here::here("output", "ResultsTPsize.rds"))
+```
+
+#### Covariance and correlation to the family mean and within-family deviation  
+This can be done on random crosses.  
+Under an additive model, the expected mean of a selfed family is the genotypic  
+value of the parent. The deviation between the genotypic value of the progeny 
+and the genotypic value of the parent is the within-family deviation.  
+Rather than training on outcrossed individuals, I'm going to go the full route
+of generating inbreds, training on them, then F1s, then selfed progeny from F1s
+```{r Covariance to mean and deviation}
+source(here::here("code", "genomicPredictionFunction.R"))
+selfedFounders <- AlphaSimR::self(founders, keepParents=F)
+for (selfGen in 1:3){ # SSD to F5
+  selfedFounders <- AlphaSimR::self(selfedFounders, keepParents=F)
+}
+selfedFounders <- AlphaSimR::setPheno(selfedFounders, H2=0.5)
+nRepeat <- 50
+allAns <- NULL
+for (nTrain in c(50, 100, 200, 400, 800)){
+  ansPop <- NULL
+  for (i in 1:nRepeat){
+    # For analytical simplicity (if not realism) separate training from parents
+    trainInd <- sample(nFounders, nTrain)
+    trainPop <- selfedFounders[trainInd]
+    parentPop <- selfedFounders[setdiff(1:nFounders, trainInd)]
+    # Create individuals by single seed descent
+    f1_pop <- AlphaSimR::randCross(parentPop, nCrosses=nProgeny)
+    f2_pop <- AlphaSimR::self(f1_pop, keepParents=F)
+    gvF1par <- AlphaSimR::gv(f1_pop)
+    devF2prog <- AlphaSimR::gv(f2_pop) - gvF1par
+    gBLUPf2 <- genPred(trainPop, f2_pop)[-(1:nTrain)]
+    covFamMean <- cov(gBLUPf2, gvF1par)
+    covWithinDev <- cov(gBLUPf2, devF2prog)
+    varGBLUP <- var(gBLUPf2)
+    varGV_F1 <- var(gvF1par)
+    varDevF2 <- var(devF2prog)
+    cat("Pop", nTrain, i, round(c(covFamMean, covWithinDev), 3), "\n")
+    ansPop <- rbind(ansPop, c(nTrain, covFamMean, covWithinDev, 
+                              varGBLUP, varGV_F1, varDevF2,
+                              covFamMean / sqrt(varGBLUP*varGV_F1),
+                              covWithinDev / sqrt(varGBLUP*varDevF2)))
+  }
+  allAns <- rbind(allAns, ansPop)
+}
+colnames(allAns) <- c("nTrain", "covFamMean", "covWithinDev", 
+                      "varGBLUP", "varGV_F1", "varDevF2",
+                      "corFamMean", "corWithinDev")
+boxplot(covFamMean ~ nTrain, data=allAns)
+boxplot(covWithinDev ~ nTrain, data=allAns)
+boxplot(corFamMean ~ nTrain, data=allAns)
+boxplot(corWithinDev ~ nTrain, data=allAns)
+
+boxplot(varGBLUP ~ nTrain, data=allAns)
+boxplot(varGV_F1 ~ nTrain, data=allAns)
+boxplot(varDevF2 ~ nTrain, data=allAns)
+
+write_rds(allAns, here::here("output", "ResultsTPsizeCovMeanDev.rds"))
+```
+
+#### Covariance and correlation without selfing the founders  
+Do this without the whole selfing rigamarole
+```{r Non-selfed covariance to mean and deviation}
+source(here::here("code", "genomicPredictionFunction.R"))
+nRepeat <- 50
+allAns <- NULL
+for (nTrain in c(50, 100, 200, 400, 800)){
+  nParents <- nFounders - nTrain
+  ansPop <- NULL
+  for (i in 1:nRepeat){
+    # For analytical simplicity (if not realism) separate training from parents
+    trainInd <- sample(nFounders, nTrain)
+    trainPop <- founders[trainInd]
+    trainPop <- AlphaSimR::setPheno(trainPop, H2=0.5)
+    parentPop <- founders[setdiff(1:nFounders, trainInd)]
+    # Create individuals by single seed descent
+    f1_pop <- AlphaSimR::randCross(parentPop, nCrosses=nProgeny)
+    gBLUP <- genPred(trainPop, c(parentPop, f1_pop))[-(1:nTrain)]
+    gBLUPpar <- gBLUP[1:nParents]
+    gBLUP_F1 <- gBLUP[-(1:nParents)]
+    # Get true and predicted family means and deviations 
+    famMeans <- (AlphaSimR::gv(parentPop[f1_pop@mother]) + 
+                   AlphaSimR::gv(parentPop[f1_pop@father])) / 2
+    devF1prog <- AlphaSimR::gv(f1_pop) - famMeans
+    famMeansPred <- (gBLUPpar[f1_pop@mother] + gBLUPpar[f1_pop@father]) / 2
+    devF1progPred <- gBLUP_F1 - famMeansPred
+
+    theCov <- cov(cbind(gBLUP_F1, famMeansPred, devF1progPred),
+                  cbind(famMeans, devF1prog))
+    theCor <- cor(cbind(gBLUP_F1, famMeansPred, devF1progPred),
+                  cbind(famMeans, devF1prog))
+    covFamMean <- cov(gBLUP_F1, famMeans)
+    covWithinDev <- cov(gBLUP_F1, devF1prog)
+    varGBLUP <- var(gBLUP_F1)
+    varFamMeans <- var(famMeans)
+    varDevF1 <- var(devF1prog)
+    cat("Pop", nTrain, i, "\n")
+    ansPop <- rbind(ansPop, c(nTrain, c(theCor), c(theCov)))
+  }
+  allAns <- rbind(allAns, ansPop)
+}
+colnames(allAns) <- c("nTrain", 
+                      "corTotMean", "corMeanMean", "corDevMean", 
+                      "corTotDev", "corMeanDev", "corDevDev", 
+                      "covTotMean", "covMeanMean", "covDevMean", 
+                      "covTotDev", "covMeanDev", "covDevDev")
+boxplot(corTotMean ~ nTrain, data=allAns)
+boxplot(corMeanMean ~ nTrain, data=allAns)
+boxplot(corDevMean ~ nTrain, data=allAns)
+boxplot(corTotDev ~ nTrain, data=allAns)
+boxplot(corMeanDev ~ nTrain, data=allAns)
+boxplot(corDevDev ~ nTrain, data=allAns)
+
+# No relationship between the correlation with family mean
+# and the correlation with within-family deviation
+write_rds(allAns, here::here("output", "ResultsTPsizeCovMeanDev_NonSelf.rds"))
+
+allAns <- read_rds(here::here("output", "ResultsTPsizeCovMeanDev_NonSelf.rds"))
+```

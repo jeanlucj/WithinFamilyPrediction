@@ -1,0 +1,355 @@
+---
+title: "StrategiesToOptimizeForWithinFamilyPrediction"
+author: 
+  name: "Jean-Luc Jannink"
+  affiliation: "USDA-ARS / Cornell"
+date: "June 10, 2024"
+output:
+  html_document:
+    fig_caption: yes
+    fig_height: 6
+    fig_width: 12
+    highlight: haddock
+    theme: cosmo
+    toc: yes
+    toc_float:
+      collapsed: no
+      toc_depth: 2
+editor_options: 
+  chunk_output_type: console
+---
+  
+<style>
+pre {
+  overflow-x: auto;
+}
+pre code {
+  word-wrap: normal;
+  white-space: pre;
+}
+</style>
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+knitr::opts_chunk$set(message=FALSE)
+knitr::opts_chunk$set(cache=FALSE)
+```
+
+## Taking the marker perspective to optimize the training population.  
+Hypothesis: if an individual has a long stretch of IBS with a parent then it is
+in fact IBD with the parent and it will better predict the parent effect in that
+stretch.
+1. Inbred individuals  
+2. Each ind has a length IBS with each parent haplotype  
+3. Maximize the sum of lengths  
+4. Minimize the KS deviation from uniformity, done separately for each parent  
+5. Minimize the difference in lengths between the two parents  
+
+The basic idea is to construct a training population with these characteristics
+by combinatorial optimization.  So pick a population and then iteratively 
+improve it by swapping individuals and testing if a utility function increases.  
+
+Ultimately, the objective is to construct a training population in which the 
+LD relationships between loci are as similar as possible to what they would be
+among the progeny of the two parents. Fulfilling points 3 to 5 aims to achieve
+that while not requiring that you calculate those LD relationships at each 
+iteration of the optimization.
+
+Noteworthy
+1. The optimization can lead to TPs that have notably worse prediction
+accuracy than a random population. I have yet to construct TPs that have notably
+better accuracy. But just the fact of variation across the parameters of the
+optimization is hopeful.
+2. There is quite a bit of variation in the accuracy achieved among repeated
+optimizations. I have not yet looked at whether characterization of the
+constructed TP can illuminate what causes the differences in the ultimate
+accuracy.
+
+Tasks
+1. See if very preliminary results are reproduced when I have higher SNP and QTL
+densities. Hmmm: I can see that that is substantially slower.  Also, not any
+better.  The optimization parameters might need to be revised.
+2. Start setting up the approach for multiple chromosomes.
+3. Start setting up the approach where the optimization is actually on the LD
+relationships among the markers.
+
+#### Load packages first  
+```{r load packages, message=TRUE}
+packages_used <- c("AlphaSimR", "tidyverse", "workflowr", "here", "rrBLUP")
+ip <- installed.packages()
+all_packages_installed <- TRUE
+for (package in packages_used){
+  if (!(package %in% ip[,"Package"])){
+    print(paste("Please install package", package))
+    all_packages_installed <- FALSE
+  }
+}#END packages_used
+if (!all_packages_installed) stop("Need to install packages")
+
+library(tidyverse)
+```
+
+#### Set file locations relative to the project folder using `here`  
+```{r set here path}
+here::i_am("analysis/OptimizeWithinFamilyPrediction.Rmd")
+
+source(here::here("code", "genomicPredictionFunction.R"))
+```
+
+#### Document packages used (sessionInfo)  
+```{r print Session Info}
+print(utils::sessionInfo())
+```
+
+#### Set random seed  
+```{r set random seed}
+random_seed <- 45678
+set.seed(random_seed)
+```
+
+#### Script parameters  
+If the behavior of your script depends on parameters that you set, 
+initialize them early on.  
+```{r simulation parameters}
+nChr <- 1 # Number of chromosomes
+nSnpPerChr <- 200 # Number of segregating sites _per chromosome_
+nQTLperChr <- 20 # Vary this parameter to get oligo- versus poly- genic traits
+
+nFounders <- 1000
+nProgeny <- 100
+```
+
+#### AlphaSimR population  
+```{r Make founder population}
+# Create haplotypes for founder population of outbred individuals
+# Note: default effective population size for runMacs is 100
+founderHaps <- AlphaSimR::runMacs(species="WHEAT", nInd=nFounders, nChr=nChr, 
+                                  segSites=nSnpPerChr+nQTLperChr)
+
+# New global simulation parameters from founder haplotypes
+SP <- AlphaSimR::SimParam$new(founderHaps)
+SP$restrSegSites(nQTLperChr, nSnpPerChr, overlap=FALSE)
+SP$addSnpChip(nSnpPerChr)
+
+# Additive trait architecture
+# By default, the genetic variance will be 1
+SP$addTraitA(nQtlPerChr=nQTLperChr)
+
+# Create a new population of founders
+founders <- AlphaSimR::newPop(founderHaps, simParam=SP)
+# Make the founders inbred
+founders <- AlphaSimR::makeDH(founders)
+```
+
+3. Maximize the sum of lengths  
+4. Minimize the difference in lengths between the two parents  
+5. Minimize the KS deviation from uniformity, done separately for each parent  
+6. Minimize the distance from the expected marker covariance matrix
+```{r Utility function}
+# Utility assumes all individuals are inbred
+trainPopUtility <- function(trainPop, parents, 
+                            diffLenWgt=1, ksWgt=1, covDistWgt=1,
+                            chr=1, useQTL=F){
+  source(here::here("code", "assessIndMrkSimilarityToPar.R"))
+  source(here::here("code", "markerCovarianceDistance.R"))
+  
+  lenIBSp1 <- lenIBSp2 <- NULL
+  for (indNum in 1:AlphaSimR::nInd(trainPop)){
+    ind <- trainPop[indNum]
+    lenIBSp1 <- rbind(
+      lenIBSp1,
+      calcMrkSimIndPar(ind, parents[1], indInbred=T, parInbred=T, 
+                       chr=chr, useQTL=useQTL)[[1]]
+    )
+    lenIBSp2 <- rbind(
+      lenIBSp2,
+      calcMrkSimIndPar(ind, parents[2], indInbred=T, parInbred=T, 
+                       chr=chr, useQTL=useQTL)[[1]]
+    )
+  }
+  ksDev <- calcDevFromUnif(lenIBSp1) + calcDevFromUnif(lenIBSp2)
+  totLen1 <- sum(lenIBSp1); totLen2 <- sum(lenIBSp2)
+  diffLenPar <- abs(totLen1 - totLen2)
+  
+  # Calculate covDist, the distance between the marker covariance of the
+  # training population and that expected in progeny of the F1
+  empirCovMat <- calcMrkCovMat(trainPop)[[1]] # Warning: hard-coded for 1 chr
+  # Warning: hard-coded for inbred parents
+  cp <- matrix(1:2, nrow=1)
+  f1 <- AlphaSimR::makeCross(parents, crossPlan=cp)
+  exptCovMat <- calcExptMrkCovMatGamete(f1)[[1]]
+  covDist <- calcMrkCovMatDist(empirCovMat, exptCovMat*4)
+
+  return(c(totLen1 + totLen2, 
+           -diffLenPar * diffLenWgt, 
+           -ksDev * ksWgt,
+           -covDist * covDistWgt))
+}
+```
+
+Right now, I don't have this set up to go over different chromosomes, so just chr=1...
+```{r Training population optimization function}
+optimizeTP <- function(candidates, parents, 
+                       tpSize=100, diffLenWgt=1, ksWgt=1, covDistWgt=1,
+                       nIter=1000, 
+                       useQTL=F, verbose=F){
+  nCandidates <- AlphaSimR::nInd(candidates)
+  tpIdx <- sample(nCandidates, size=tpSize)
+  trainPop <- candidates[tpIdx]
+  bestUtil <- trainPopUtility(trainPop, parents, 
+                              diffLenWgt=diffLenWgt, ksWgt=ksWgt, covDistWgt,
+                              useQTL=useQTL) %>% sum
+  allIter <- NULL
+  for (optIter in 1:nIter){
+    # Swap out one in trainPop
+    # If new is better, keep else go back to old
+    swapOut <- sample(tpSize, size=1)
+    swapIn <- sample(setdiff(1:nCandidates, tpIdx), size=1)
+    trainPopCand <- c(trainPop[-swapOut], candidates[swapIn])
+    candUtil <- trainPopUtility(trainPopCand, parents, 
+                                diffLenWgt=diffLenWgt, ksWgt=ksWgt, covDistWgt,
+                                useQTL=useQTL) %>% sum
+    if (candUtil > bestUtil){
+      trainPop <- trainPopCand
+      tpIdx <- c(tpIdx[-swapOut], swapIn)
+      bestUtil <- candUtil
+    }
+    allIter <- c(allIter, bestUtil)
+    if (verbose) if (optIter %% 40 == 0) cat(".")
+  }
+  if (verbose) plot(allIter); cat("\n")
+  return(trainPop)
+}
+```
+
+```{r Mini test}
+useQTL <- F # For optimization, this is cheating, but want to see if it can work
+diffLenWgt <- 0.1 # Reduce weight from the difference in length
+ksWgt <- 40 # Add weight to the KS statistic
+covDistWgt <- 2
+tpSize <- 100
+allRes <- NULL
+for (parPair in 21:100){
+  parentsIdx <- sample(nFounders, 2)
+  parents <- founders[parentsIdx]
+  trainCand <- founders[-parentsIdx]
+  
+  # Make progeny population
+  cp <- matrix(1:2, nrow=1)
+  f1 <- AlphaSimR::makeCross(parents, crossPlan=cp)
+  progenyPop <- AlphaSimR::makeDH(f1, nDH=nProgeny)
+
+  # Make potential training populations
+  # At random from the candidates
+  for (i in 1:5){
+    trainProgenyPop <- AlphaSimR::makeDH(f1, nDH=tpSize)
+    trainProgenyPop <- AlphaSimR::setPheno(trainProgenyPop, varE=1)
+    gblupFromSibs <- genPred(trainProgenyPop, progenyPop)
+    accFromSibs <- cor(gblupFromSibs[tpSize + 1:nProgeny], AlphaSimR::bv(progenyPop))
+    cat("Accuracy from sibs", accFromSibs, "\n")
+    tst <- trainPopUtility(trainProgenyPop, parents, useQTL=useQTL)
+    allRes <- rbind(allRes, c(parPair, 0, i, tst, accFromSibs))
+    saveRDS(allRes, file=here::here("output", "ResMiniTest.rds"))
+  }
+  for (i in 1:5){
+    trainRnd <- trainCand[sample(AlphaSimR::nInd(trainCand), tpSize)]
+    trainRnd <- AlphaSimR::setPheno(trainRnd, varE=1)
+    gblupFromRnd <- genPred(trainRnd, progenyPop)
+    accFromRnd <- cor(gblupFromRnd[tpSize + 1:nProgeny], AlphaSimR::bv(progenyPop))
+    cat("Accuracy from rand", accFromRnd, "\n")
+    tst <- trainPopUtility(trainRnd, parents, useQTL=useQTL)
+    allRes <- rbind(allRes, c(parPair, 1, i, tst, accFromRnd))
+    saveRDS(allRes, file=here::here("output", "ResMiniTest.rds"))
+  }
+  for (i in 1:5){
+    trainOpt <- optimizeTP(trainCand, parents, tpSize=tpSize, verbose=T, useQTL=useQTL, diffLenWgt=diffLenWgt, ksWgt=ksWgt, covDistWgt=covDistWgt)
+    trainOpt <- AlphaSimR::setPheno(trainOpt, varE=1)
+    gblupFromOpt <- genPred(trainOpt, progenyPop)
+    accFromOpt <- cor(gblupFromOpt[tpSize + 1:nProgeny], AlphaSimR::bv(progenyPop))
+    cat("Accuracy from opt", accFromOpt, "\n")
+    tst <- trainPopUtility(trainOpt, parents, useQTL=useQTL)
+    allRes <- rbind(allRes, c(parPair, 2, i, tst, accFromOpt))
+    saveRDS(allRes, file=here::here("output", "ResMiniTest.rds"))
+  }
+}
+colnames(allRes) <- c("parPair", "Sib0Rnd1Opt2", "rep", "sumLenSame",
+                      "diffLen", "ksUnifDistr", "distCovMat", "accuracy")
+saveRDS(allRes, file=here::here("output", "ResMiniTest.rds"))
+
+allRes <- readRDS(file=here::here("output", "ResMiniTest.rds"))
+```
+
+Some questions to look into:
+1. Are there some parent pairs that are lower than others both for random and opt?
+2. At the macro scale it looked like uniformity was important, what about at the
+micro scale?
+3. Does it still work if you don't include the QTL?
+```{r Do some tests}
+print(tapply(allRes[,"accuracy"], allRes[,2], median, na.rm=T))
+print(tapply(allRes[,"accuracy"], allRes[,2], mean, na.rm=T))
+print(tapply(allRes[,"accuracy"], allRes[,2], min))
+print(tapply(allRes[,"sumLenSame"], allRes[,2], sd))
+print(tapply(allRes[,"diffLen"], allRes[,2], sd))
+print(tapply(allRes[,"ksUnifDistr"], allRes[,2], sd))
+print(tapply(allRes[,"distCovMat"], allRes[,2], sd))
+print(t.test(allRes[allRes[,2]==1, 8], allRes[allRes[,2]==2, 8]))
+print(t.test(allRes[allRes[,2]==0, 4], allRes[allRes[,2]==2, 4]))
+print(t.test(allRes[allRes[,2]==0, 5], allRes[allRes[,2]==2, 5]))
+print(t.test(allRes[allRes[,2]==0, 6], allRes[allRes[,2]==2, 6]))
+
+probLT0 <- function(v, na.rm) return(sum(v < 0, na.rm=na.rm) / length(v))
+print(tapply(allRes[,"accuracy"], allRes[,"Sib0Rnd1Opt2"], probLT0, na.rm=T))
+
+aR_df <- data.frame(allRes)
+aR_df[,"parPair"] <- as.factor(aR_df[,"parPair"])
+aR_df[,"Sib0Rnd1Opt2"] <- as.factor(aR_df[,"Sib0Rnd1Opt2"])
+fitOpt <- lm(accuracy ~ parPair*Sib0Rnd1Opt2, subset= Sib0Rnd1Opt2 != 0, data=aR_df)
+anova(fitOpt)
+
+# allRes[allRes[,"parPair"] < 21, "Sib0Rnd1Opt2"] <- 
+#   allRes[allRes[,"parPair"] < 21, "Sib0Rnd1Opt2"] - 1
+
+boxplot(accuracy ~ Sib0Rnd1Opt2, data=allRes, main="Accuracy")
+boxplot(sumLenSame ~ Sib0Rnd1Opt2, data=allRes, main="Len Same Par")
+boxplot(-diffLen ~ Sib0Rnd1Opt2, data=allRes, main="Diff Par1 Par2")
+boxplot(-ksUnifDistr ~ Sib0Rnd1Opt2, data=allRes, main="Diff from Unif")
+boxplot(-distCovMat ~ Sib0Rnd1Opt2, data=allRes, main="Dist CovMat")
+boxplot(accuracy ~ Sib0Rnd1Opt2, data=allRes)
+```
+
+```{r Find best parameters for optimzing the TP by BO}
+source(here::here("code", "functionsToUseBO.R"))
+library(rBayesianOptimization)
+
+tpSize <- 100
+useQTL <- F # For optimization, T would be cheating, but OK for troubleshooting
+chr <- 1
+nIter <- 1000
+verbose <- F
+# Choose an arbitrary pair of parents
+parentsIdx <- sample(nFounders, 2)
+parents <- founders[parentsIdx]
+trainCand <- founders[-parentsIdx]
+# Make progeny population
+cp <- matrix(1:2, nrow=1)
+f1 <- AlphaSimR::makeCross(parents, crossPlan=cp)
+progenyPop <- AlphaSimR::makeDH(f1, nDH=nProgeny)
+
+s <- Sys.time()
+optRes <- BayesianOptimization(maximizeThis,
+                                bounds = list(diffLenWgt = c(-2, 2),
+                                              ksWgt = c(-2, 2),
+                                              covDistWgt = c(-2, 2)),
+                                init_grid_dt = NULL, 
+                                init_points = 2, 
+                                n_iter = 3,
+                                acq = "ei", 
+                                kappa = 2.576, eps = 0.0,
+                                verbose = TRUE)
+print(Sys.time() - s)
+saveRDS(optRes, file=here::here("output", "ParmsOptimizedByBO_par.rds"))
+```
+
+```{r Get here}
+```
+

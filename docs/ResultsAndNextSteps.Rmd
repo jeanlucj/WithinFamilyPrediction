@@ -1,0 +1,78 @@
+---
+title: "Results and Next Steps"
+output:
+  workflowr::wflow_html:
+    toc: false
+editor_options:
+  chunk_output_type: console
+---
+
+### Next Steps
+-- Will need to do this eventually with different heritabilities
+
+-- Refigure out what my result was for predicting family means and Mendelian 
+segregation terms
+
+-- I'm also just curious what trying to reduce the difference to the expected
+covariance matrix among markers actually does. And whether I should look at the
+covariance matrix among all markers, whether they are polymorphic in the F1 or
+not, or just at the polymorphic markers. (If they are not polymorphic, the
+expected covariance matrix has a lot of zero rows and columns in it).
+
+-- There is a Bayesian optimization package that looks somewhat straightforward
+to use
+https://cran.r-project.org/web/packages/rBayesianOptimization/rBayesianOptimization.pdf
+I should write a function to be optimized that would identify the best weights
+among the different criteria that I think make a training population look like
+a full sib population.
+
+-- As of now, I'm only working on ONE chromosome.  So I will have to figure out
+how to move to multiple chromosomes.  It seems like this also suggests that the
+use case where all the individuals are already phenotyped is more relevant, since
+there might well be different individuals for one chromosome versus another.
+
+### Some results on a couple of use cases
+Use case: you have genotyped and _already_ phenotyped 800 individuals. Now pick
+a subset of size x that maximizes the prediction accuracy to predict a specific
+biparental population using their marker data and possibly their phenotypes.  
+I have not addressed this use case yet and don't really know how.  
+Here's a thought: pick sets of 100 by optimization.  Average the predictions 
+from each set of optimized 100.  I'm guessing that will be better than averaging
+predictions from random sets of 100.
+
+Use case: You have genotyped 800 individuals from the general breeding 
+population, now you have to choose 100 of them to phenotype to predict a specific
+biparental population.  Use their marker data to pick them.  
+This use case is a lesser one because you will more than likely have multiple
+biparental populations, and so you will need to phenotype many sets of 100 and
+so presumably come close to phenotyping all 800 of them.
+
+With these parameters:
+useQTL <- F # For optimization, this is cheating, but want to see if it can work
+diffLenWgt <- 0.1 # Reduce weight from the difference in length
+ksWgt <- 40 # Add weight to the KS statistic
+covDistWgt <- 2
+tpSize <- 100
+
+The result is:
+Analysis of Variance Table
+
+Response: accuracy
+                      Df Sum Sq Mean Sq F value    Pr(>F)    
+parPair               99 72.777  0.7351  8.6854 < 2.2e-16 ***
+Sib0Rnd1Opt2           1  5.819  5.8190 68.7504 4.709e-16 ***
+parPair:Sib0Rnd1Opt2  99 15.541  0.1570  1.8547 3.826e-06 ***
+Residuals            800 67.711  0.0846                      
+
+Median
+        0         1         2 
+0.9068917 0.3676194 0.5604759 
+Mean
+        0         1         2 
+0.8701656 0.2961596 0.4487240 
+Min
+        0         1         2 
+-0.057700 -0.781341 -0.823253 
+Prob accuracy < 0
+    0     1     2 
+0.002 0.238 0.132 
