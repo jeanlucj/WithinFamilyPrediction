@@ -1,0 +1,118 @@
+---
+title: "OptimizeWithParallelization"
+author: "Jean-Luc Jannink"
+date: "2024-09-07"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### What to run from other markdowns.  
+From MakeTheFounderPopulation.Rmd
+`setup`
+`load packages`
+`set here path`
+`set random seed`
+`simulation parameters`
+`Make founder population`
+
+Terrible programming: I'm saving needed variables in the .GlobalEnv  
+so I can put them back there inside the foreach loop
+This programming falls under the category of "you do the best you can until
+you know better, then you do better".  I don't know better...
+```{r Objects needed in .GlobalEnv}
+stop("Don't run this unless you want a whole new set of founders")
+globalEnvObj <- c("founders", "nChr", "nFounders", "nProgeny", "nQTLperChr",
+                  "nSnpPerChr", "SP")
+globalEnvObj <- mget(globalEnvObj)
+saveRDS(globalEnvObj, here::here("output", "saveGlobalEnvObj.rds"))
+```
+
+Since making the progeny population doesn't take long, any vector of TP
+optimization parameters will be applied to make one TP for each of 24 families
+```{r Find best parameters for optimzing the TP by BO parallel}
+require(doParallel); require(foreach)
+cl <- makeCluster(6)
+registerDoParallel(cl)
+
+maximizeThis <- function(diffLenWgt, ksWgt, covDistWgt){
+
+  nTPoptPerParmVec <- 30
+  allCor <- foreach(i=1:nTPoptPerParmVec, .combine=c) %dopar% {
+    # Bring needed objects into the .GlobalEnv
+    globalEnvObj <- readRDS(here::here("output", "saveGlobalEnvObj.rds"))
+    for (n in names(globalEnvObj)) assign(n, globalEnvObj[[n]], envir=.GlobalEnv)
+    tpSize <- 100
+    useQTL <- F
+    chr <- 1
+    nIterTpOptim <- 1000
+    verbose <- F
+
+    require(tidyverse)
+
+    source(here::here("code", "functionsToUseBO.R"))
+    source(here::here("code", "genomicPredictionFunction.R"))
+    source(here::here("code", "assessIndMrkSimilarityToPar.R"))
+    source(here::here("code", "markerCovarianceDistance.R"))
+    # Make the progeny pop
+    parentsIdx <- sample(nFounders, 2)
+    parents <- founders[parentsIdx]
+    trainCand <- founders[-parentsIdx]
+    f1 <- AlphaSimR::makeCross(parents, crossPlan=matrix(1:2, nrow=1))
+    progenyPop <- AlphaSimR::makeDH(f1, nDH=nProgeny)
+
+    trainOpt <- makeTheTP(diffLenWgt=diffLenWgt,
+                          ksWgt=ksWgt,
+                          covDistWgt=covDistWgt,
+                          candidates=trainCand, parents=parents,
+                          tpSize=tpSize, useQTL=useQTL, chr=chr,
+                          nIter=nIterTpOptim, verbose=verbose)
+    trainOpt <- AlphaSimR::setPheno(trainOpt, varE=1)
+    gblupFromOpt <- genPred(trainOpt, progenyPop)
+    cor(gblupFromOpt[tpSize + 1:nProgeny], AlphaSimR::bv(progenyPop))
+  }
+  return(list(Score=mean(allCor, na.rm=T), Pred=0))
+}
+
+library(rBayesianOptimization)
+
+nBayesianIter <- 10
+for (i in 1:nBayesianIter){
+  # See if there are previous results to build on
+  outputFiles <- list.files(here::here("output"), patter="rds")
+  if (any(outputFiles == "ParmsOptimizedByBOparallel.rds")){
+    initializeObs <- readRDS(
+      file=here::here("output", "ParmsOptimizedByBOparallel.rds"))
+    initializeObs <- initializeObs$History[,-1]
+  } else{
+    initializeObs <- NULL
+  }
+
+  s <- Sys.time()
+  optRes <- try(BayesianOptimization(maximizeThis,
+                                bounds = list(diffLenWgt = c(-2, 2),
+                                             ksWgt = c(-2, 2),
+                                             covDistWgt = c(-2, 2)),
+                                init_grid_dt = initializeObs, 
+                                init_points = 0, 
+                                n_iter = 1,
+                                acq = "ei", 
+                                kappa = 2.576, eps = 0.0,
+                                verbose = F,
+                                kernel=list(type="matern", nu=5/2),
+                                nug_thres=9),
+                silent=T)
+  
+  print(Sys.time() - s)
+
+  if (class(optRes) != "try-error"){
+    saveRDS(optRes, file=here::here("output", "ParmsOptimizedByBOparallel.rds"))
+  } else{
+    print(paste0("Error in Bayesian Optimization ", i))
+  }
+} #End nBayesianIter
+
+stopCluster(cl)
+```

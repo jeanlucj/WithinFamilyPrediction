@@ -92,8 +92,6 @@ library(tidyverse)
 #### Set file locations relative to the project folder using `here`  
 ```{r set here path}
 here::i_am("analysis/OptimizeWithinFamilyPrediction.Rmd")
-
-source(here::here("code", "genomicPredictionFunction.R"))
 ```
 
 #### Document packages used (sessionInfo)  
@@ -309,12 +307,17 @@ anova(fitOpt)
 # allRes[allRes[,"parPair"] < 21, "Sib0Rnd1Opt2"] <- 
 #   allRes[allRes[,"parPair"] < 21, "Sib0Rnd1Opt2"] - 1
 
-boxplot(accuracy ~ Sib0Rnd1Opt2, data=allRes, main="Accuracy")
-boxplot(sumLenSame ~ Sib0Rnd1Opt2, data=allRes, main="Len Same Par")
-boxplot(-diffLen ~ Sib0Rnd1Opt2, data=allRes, main="Diff Par1 Par2")
-boxplot(-ksUnifDistr ~ Sib0Rnd1Opt2, data=allRes, main="Diff from Unif")
-boxplot(-distCovMat ~ Sib0Rnd1Opt2, data=allRes, main="Dist CovMat")
-boxplot(accuracy ~ Sib0Rnd1Opt2, data=allRes)
+boxplot(accuracy ~ Sib0Rnd1Opt2, data=allRes, main="Accuracy", 
+        cex.lab=1.3, cex.axis=1.3)
+boxplot(sumLenSame ~ Sib0Rnd1Opt2, data=allRes, main="Len Same Par",
+        cex.lab=1.3, cex.axis=1.3)
+boxplot(-diffLen ~ Sib0Rnd1Opt2, data=allRes, main="Diff Par1 Par2",
+        cex.lab=1.3, cex.axis=1.3)
+boxplot(-ksUnifDistr ~ Sib0Rnd1Opt2, data=allRes, main="Diff from Unif",
+        cex.lab=1.3, cex.axis=1.3)
+boxplot(-distCovMat ~ Sib0Rnd1Opt2, data=allRes, main="Dist CovMat", 
+        cex.lab=1.3, cex.axis=1.3)
+
 ```
 
 ```{r Find best parameters for optimzing the TP by BO}
@@ -335,19 +338,27 @@ cp <- matrix(1:2, nrow=1)
 f1 <- AlphaSimR::makeCross(parents, crossPlan=cp)
 progenyPop <- AlphaSimR::makeDH(f1, nDH=nProgeny)
 
+# See if there are previous results to build on
+outputFiles <- list.files(here::here("output"), patter="rds")
+if (any(outputFiles == "ParmsOptimizedByBO.rds")){
+  initializeObs <- readRDS(file=here::here("output", "ParmsOptimizedByBO.rds"))
+  initializeObs <- initializeObs$History[,-1]
+} else{
+  initializeObs <- NULL
+}
 s <- Sys.time()
 optRes <- BayesianOptimization(maximizeThis,
                                 bounds = list(diffLenWgt = c(-2, 2),
                                               ksWgt = c(-2, 2),
                                               covDistWgt = c(-2, 2)),
-                                init_grid_dt = NULL, 
-                                init_points = 2, 
-                                n_iter = 3,
+                                init_grid_dt = initializeObs, 
+                                init_points = 0, 
+                                n_iter = 80,
                                 acq = "ei", 
                                 kappa = 2.576, eps = 0.0,
                                 verbose = TRUE)
 print(Sys.time() - s)
-saveRDS(optRes, file=here::here("output", "ParmsOptimizedByBO_par.rds"))
+saveRDS(optRes, file=here::here("output", "ParmsOptimizedByBO3.rds"))
 ```
 
 ```{r Get here}

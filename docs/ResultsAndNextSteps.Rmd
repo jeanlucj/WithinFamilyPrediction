@@ -8,6 +8,24 @@ editor_options:
 ---
 
 ### Next Steps
+-- You can do stepwise backwards multiple regression.  To work on the first and
+more important use case, I need to figure out if there is a way to do that with
+eliminating individuals from the training population.  How to start from 1000
+and end up with fewer _but_ that give a _higher_ average prediction accuracy.
+If I had to start with anything, it would be distance IIS and then the marker
+LD matrix. Let's try this.
+
+-- I think first I need to implement multi-chromosome versions of this.  So the
+next explorations have to do with whether I can fit either BGLR or EMMremlmultikernel
+to these datasets.
+Initial Result: with random training populations, I compared one random training
+pop of 100 for the whole genome versus seven random training pops, one for each
+of a seven chromosome genome.  The correlation between one and seven was 0.43.
+The mean accuracy was 0.280 for one and 0.287 for seven.  The std devs were
+0.199 for one and 0.175 for seven.  The low correlation and the equality of
+overall accuracy were striking.  It makes sense that there was less spread for
+the summed per chromosome prediction.
+
 -- Will need to do this eventually with different heritabilities
 
 -- Refigure out what my result was for predicting family means and Mendelian 
@@ -15,21 +33,46 @@ segregation terms
 
 -- I'm also just curious what trying to reduce the difference to the expected
 covariance matrix among markers actually does. And whether I should look at the
-covariance matrix among all markers, whether they are polymorphic in the F1 or
-not, or just at the polymorphic markers. (If they are not polymorphic, the
-expected covariance matrix has a lot of zero rows and columns in it).
+covariance matrix among all markers or just at the polymorphic markers. If they
+are not polymorphic, the expected covariance matrix has a lot of zero rows and
+columns in it.
 
--- There is a Bayesian optimization package that looks somewhat straightforward
-to use
-https://cran.r-project.org/web/packages/rBayesianOptimization/rBayesianOptimization.pdf
-I should write a function to be optimized that would identify the best weights
-among the different criteria that I think make a training population look like
-a full sib population.
+-- I have been using the Bayesian optimization package  
+https://cran.r-project.org/web/packages/rBayesianOptimization/rBayesianOptimization.pdf  
+It seems to be working but I think this problem would be a good one to try to
+use tidymodels. I should work on that eventually.
+
+-- Independent optimizations of the TP for a single biparental come up with 
+different TPs.  
+  1. How different are the TPs? If I make a union of the different TPs is it
+  smaller than a union of randomly selected TPs? That is, if an accession is
+  chosen to be in the TP in one optimization, is it more likely to be chosen for
+  the TP in an independent optimization?
+  2. Among the independently optimized TPs, is there utility at all related to
+  the accuracy that they generate? 
+  3. If I generate a prediction for each
+  optimized TP, and then average those predictions do I get a better accuracy
+  than from picking the optimized TP with the highest utility?
 
 -- As of now, I'm only working on ONE chromosome.  So I will have to figure out
-how to move to multiple chromosomes.  It seems like this also suggests that the
-use case where all the individuals are already phenotyped is more relevant, since
-there might well be different individuals for one chromosome versus another.
+how to move to multiple chromosomes.  Working with multiple chromosomes also
+suggests that the use case where all the individuals are already phenotyped is
+more relevant, since there might well be different individuals for one
+chromosome versus another.  
+Different ways of working with multiple chromosomes:  
+  
+  1. Fit a two-kernel model on each optimized TP, with one kernel being the
+  focal chromosome and the other kernel being the rest-of-genome (ROG).  Then use
+  the results from the focal kernel to predict the focal chromosome in the family.
+  2. Fit a two-kernel model on ALL of the accessions, subtract the ROG value from
+  the phenotype of the individuals in the optimized TP then use this adjusted
+  phenotype to fit a one kernel focal chromosome model on the optimized TP.
+  3. Fit a three-kernel model (I'm not sure I know how to make this work yet)
+  where there is an ROG kernel for ALL accessions and there are separate focal
+  chromosome kernels for the optimized TP and the remainder of the accessions.
+  This approach seems most promising if I can get it to work. I can get this
+  approach to work.
+
 
 ### Some results on a couple of use cases
 Use case: you have genotyped and _already_ phenotyped 800 individuals. Now pick
@@ -47,8 +90,40 @@ This use case is a lesser one because you will more than likely have multiple
 biparental populations, and so you will need to phenotype many sets of 100 and
 so presumably come close to phenotyping all 800 of them.
 
+### Some preliminary results.  
+The weights to optimize TPs for IndependenceOfOptimizedTPs_FourCrit100.rds
+are
+diffLenWgt=-0.5; ksWgt=1; covDistWgt=1.3
+ksWgt was probably over weighted here
+
+The weights to optimize TPs for IndependenceOfOptimizedTPs_FourCrit50.rds
+are
+diffLenWgt=-0.5; ksWgt=0; covDistWgt=1.3
+
+I have used BO to figure out best weights for the four criteria.  As far as I
+can tell, the only BO engine natively available in R uses GPfit which is intended
+for deterministic function outputs.  You can trick it to include a "nugget" for
+variation within a single parameter vector.  That depends on a nugget threshold,
+nug_thres, which, as far as I can tell, depends on how many observations you
+have to fit the GP to.  So it's a bit of a mess.  All of the BO I have done so
+far has not properly modeled the stochasticiy of the output.  The script for
+identifying good weights is `FindGoodParmsByParallelBO.rmd`.  It has generated
+observations here file=here::here("output", "ParmsOptimizedByBOparallel.rds") I
+think I should try continuing it a bit with parameters passed to GPfit of
+corr=list(type="matern", nu=5/2) and nug_thres=8 NOTE: it is delivering
+parameters optimized for a training population of 100. I do not know if those
+parameters would be best for different training population sizes.
+
+In the Bayesian optimization, after about 250 iterations the median weight values
+are LenIISwgt=1, diffLenWgt=6.56, ksWgt=2.44, covDistWgt=26.02 with 1000 iterations
+of TP optimization.  Those weights are giving average within family accuracy of 0.57
+which is similar to the accuracy of random training populations of about 200
+individuals which give an accuracy of 0.58
+NOTE: all of those weights are going to be specific to the simulation circumstances
+of ONE chromosome, 200 SNPs, 20 QTL, heritability of 0.5, additive model, yada yada yada
+
 With these parameters:
-useQTL <- F # For optimization, this is cheating, but want to see if it can work
+useQTL <- F # For optimization, T would be cheating, but want to see if it can work
 diffLenWgt <- 0.1 # Reduce weight from the difference in length
 ksWgt <- 40 # Add weight to the KS statistic
 covDistWgt <- 2

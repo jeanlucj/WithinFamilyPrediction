@@ -42,9 +42,10 @@ calcExptMrkCovMatGamete <- function(ind){
 
 # Calculates the Manhattan distance of the upper.tri including the diagonal
 calcMrkCovMatDist <- function(covMat1, covMat2){
+  require(magrittr)
   if (any(dim(covMat1) != dim(covMat2)))
     stop("calcMrkCovMatDist: Matrices have to be the same size")
-  if (dim(covMat1) %>% unique %>% length != 1)
+  if (length(unique(dim(covMat1))) != 1)
     stop("calcMrkCovMatDist: Matrices have to be square")
   coef1 <- covMat1[upper.tri(covMat1, diag=T)]
   coef2 <- covMat2[upper.tri(covMat2, diag=T)]

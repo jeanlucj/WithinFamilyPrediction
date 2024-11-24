@@ -1,0 +1,150 @@
+---
+title: "MakeTheFounderPopulation"
+author: 
+  name: "Jean-Luc Jannink"
+  affiliation: "USDA-ARS / Cornell"
+date: "September 7th, 2024"
+output:
+  html_document:
+    fig_caption: yes
+    fig_height: 6
+    fig_width: 12
+    highlight: haddock
+    theme: cosmo
+    toc: yes
+    toc_float:
+      collapsed: no
+      toc_depth: 2
+editor_options: 
+  chunk_output_type: console
+---
+  
+<style>
+pre {
+  overflow-x: auto;
+}
+pre code {
+  word-wrap: normal;
+  white-space: pre;
+}
+</style>
+
+Create the founder population that will be the basis for within-family
+prediction The assumption is that different founder populations might behave
+somewhat differently
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+knitr::opts_chunk$set(message=FALSE)
+knitr::opts_chunk$set(cache=FALSE)
+```
+
+## Taking the marker perspective to optimize the training population.  
+Hypothesis: if an individual has a long stretch of IBS with a parent then it is
+in fact IBD with the parent and it will better predict the parent effect in that
+stretch.
+1. Inbred individuals  
+2. Each ind has a length IBS with each parent haplotype  
+3. Maximize the sum of lengths  
+4. Minimize the KS deviation from uniformity, done separately for each parent  
+5. Minimize the difference in lengths between the two parents  
+
+The basic idea is to construct a training population with these characteristics
+by combinatorial optimization.  So pick a population and then iteratively 
+improve it by swapping individuals and testing if a utility function increases.  
+
+Ultimately, the objective is to construct a training population in which the 
+LD relationships between loci are as similar as possible to what they would be
+among the progeny of the two parents. Fulfilling points 3 to 5 aims to achieve
+that while not requiring that you calculate those LD relationships at each 
+iteration of the optimization.
+
+Noteworthy
+1. The optimization can lead to TPs that have notably worse prediction
+accuracy than a random population. I have yet to construct TPs that have notably
+better accuracy. But just the fact of variation across the parameters of the
+optimization is hopeful.
+2. There is quite a bit of variation in the accuracy achieved among repeated
+optimizations. I have not yet looked at whether characterization of the
+constructed TP can illuminate what causes the differences in the ultimate
+accuracy.
+
+Tasks
+1. See if very preliminary results are reproduced when I have higher SNP and QTL
+densities. Hmmm: I can see that that is substantially slower.  Also, not any
+better.  The optimization parameters might need to be revised.
+2. Start setting up the approach for multiple chromosomes.
+3. Start setting up the approach where the optimization is actually on the LD
+relationships among the markers.
+
+#### Load packages first  
+```{r load packages, message=TRUE}
+packages_used <- c("AlphaSimR", "tidyverse", "workflowr", "here", "rrBLUP",
+                   "EMMREML")
+ip <- installed.packages()
+all_packages_installed <- TRUE
+for (package in packages_used){
+  if (!(package %in% ip[,"Package"])){
+    print(paste("Please install package", package))
+    all_packages_installed <- FALSE
+  }
+}#END packages_used
+if (!all_packages_installed) stop("Need to install packages")
+
+library(tidyverse)
+```
+
+#### Set file locations relative to the project folder using `here`  
+```{r set here path}
+here::i_am("analysis/MakeTheFounderPopulation.Rmd")
+```
+
+#### Document packages used (sessionInfo)  
+```{r print Session Info}
+print(utils::sessionInfo())
+```
+
+#### Set random seed  
+```{r set random seed}
+random_seed <- 45678
+set.seed(random_seed)
+```
+
+#### Script parameters  
+If the behavior of your script depends on parameters that you set, 
+initialize them early on.  
+```{r simulation parameters}
+nChr <- 1 # Number of chromosomes
+nSnpPerChr <- 200 # Number of segregating sites _per chromosome_
+nQTLperChr <- 20 # Vary this parameter to get oligo- versus poly- genic traits
+
+nFounders <- 1000
+nProgeny <- 100
+```
+
+#### AlphaSimR population  
+```{r Make founder population}
+# Create haplotypes for founder population of outbred individuals
+# Note: default effective population size for runMacs is 100
+founderHaps <- AlphaSimR::runMacs(species="WHEAT", nInd=nFounders, nChr=nChr, 
+                                  segSites=nSnpPerChr+nQTLperChr)
+
+# New global simulation parameters from founder haplotypes
+SP <- AlphaSimR::SimParam$new(founderHaps)
+SP$restrSegSites(nQTLperChr, nSnpPerChr, overlap=FALSE)
+SP$addSnpChip(nSnpPerChr)
+
+# Additive trait architecture
+# By default, the genetic variance will be 1
+SP$addTraitA(nQtlPerChr=nQTLperChr)
+
+# Create a new population of founders
+founders <- AlphaSimR::newPop(founderHaps, simParam=SP)
+# Make the founders inbred
+founders <- AlphaSimR::makeDH(founders)
+```
+
+```{r Get to here}
+
+```
+

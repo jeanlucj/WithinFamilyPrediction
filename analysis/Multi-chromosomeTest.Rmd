@@ -1,0 +1,193 @@
+---
+title: "Multi-chromosome Test"
+author: "Jean-Luc Jannink"
+date: "2024-09-17"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### Multi-chromosome test
+```{r Multi-chromosome test}
+useQTL <- F # For optimization, this is cheating, but want to see if it can work
+diffLenWgt <- -0.5 # Reduce weight from the difference in length
+ksWgt <- 0.5 # Add weight to the KS statistic
+covDistWgt <- 1.3
+tpSize <- 100
+
+source(here::here("code", "functionsToUseBO.R"))
+
+allRes <- NULL
+for (parPair in 1:100){
+  
+nM <- 402
+mFound <- founders[1:nM]
+parentsIdx <- sample(nM, 2)
+parents <- mFound[parentsIdx]
+trainCand <- mFound[-parentsIdx]
+trainCand <- AlphaSimR::setPheno(trainCand, varE=1)
+nTrain <- AlphaSimR::nInd(trainCand)
+
+# Make progeny population
+cp <- matrix(1:2, nrow=1)
+f1 <- AlphaSimR::makeCross(parents, crossPlan=cp)
+progenyPop <- AlphaSimR::makeDH(f1, nDH=nProgeny)
+
+tpSize <- 100
+oneTrain <- sample(nTrain, tpSize) %>% sort
+
+listTrain <- list()
+for (chr in 1:nChr){
+  listTrain <- c(listTrain, list(sample(nTrain, tpSize) %>% sort))
+}
+
+predFromOne <- genPred(trainCand[oneTrain], progenyPop)
+accFromOne <- cor(predFromOne[tpSize + 1:nTest], AlphaSimR::bv(progenyPop))
+
+predFromList <- genPredMultiChr(trainCand, listTrain, progenyPop)
+accFromList <- cor(predFromList, AlphaSimR::bv(progenyPop))
+cat(accFromOne, accFromList, "\n")
+
+allRes <- rbind(allRes, c(accFromOne, accFromList))
+}
+
+  #### 
+  parentsIdx <- sample(nFounders, 2)
+  parents <- founders[parentsIdx]
+  trainCand <- founders[-parentsIdx]
+  
+  # Make progeny population
+  cp <- matrix(1:2, nrow=1)
+  f1 <- AlphaSimR::makeCross(parents, crossPlan=cp)
+  progenyPop <- AlphaSimR::makeDH(f1, nDH=nProgeny)
+
+  # Make potential training populations
+  # At random from the candidates
+  for (i in 1:5){
+    trainProgenyPop <- AlphaSimR::makeDH(f1, nDH=tpSize)
+    trainProgenyPop <- AlphaSimR::setPheno(trainProgenyPop, varE=1)
+    gblupFromSibs <- genPred(trainProgenyPop, progenyPop)
+    accFromSibs <- cor(gblupFromSibs[tpSize + 1:nProgeny], AlphaSimR::bv(progenyPop))
+    cat("Accuracy from sibs", accFromSibs, "\n")
+    tst <- trainPopUtility(trainProgenyPop, parents, useQTL=useQTL)
+    allRes <- rbind(allRes, c(parPair, 0, i, tst, accFromSibs))
+    saveRDS(allRes, file=here::here("output", "ResMiniTest.rds"))
+  }
+  for (i in 1:5){
+    trainRnd <- trainCand[sample(AlphaSimR::nInd(trainCand), tpSize)]
+    trainRnd <- AlphaSimR::setPheno(trainRnd, varE=1)
+    gblupFromRnd <- genPred(trainRnd, progenyPop)
+    accFromRnd <- cor(gblupFromRnd[tpSize + 1:nProgeny], AlphaSimR::bv(progenyPop))
+    cat("Accuracy from rand", accFromRnd, "\n")
+    tst <- trainPopUtility(trainRnd, parents, useQTL=useQTL)
+    allRes <- rbind(allRes, c(parPair, 1, i, tst, accFromRnd))
+    saveRDS(allRes, file=here::here("output", "ResMiniTest.rds"))
+  }
+  for (i in 1:5){
+    trainOpt <- optimizeTP(trainCand, parents, tpSize=tpSize, verbose=T, useQTL=useQTL, diffLenWgt=diffLenWgt, ksWgt=ksWgt, covDistWgt=covDistWgt)
+    trainOpt <- AlphaSimR::setPheno(trainOpt, varE=1)
+    gblupFromOpt <- genPred(trainOpt, progenyPop)
+    accFromOpt <- cor(gblupFromOpt[tpSize + 1:nProgeny], AlphaSimR::bv(progenyPop))
+    cat("Accuracy from opt", accFromOpt, "\n")
+    tst <- trainPopUtility(trainOpt, parents, useQTL=useQTL)
+    allRes <- rbind(allRes, c(parPair, 2, i, tst, accFromOpt))
+    saveRDS(allRes, file=here::here("output", "ResMiniTest.rds"))
+  }
+}
+colnames(allRes) <- c("parPair", "Sib0Rnd1Opt2", "rep", "sumLenSame",
+                      "diffLen", "ksUnifDistr", "distCovMat", "accuracy")
+saveRDS(allRes, file=here::here("output", "ResMiniTest.rds"))
+
+allRes <- readRDS(file=here::here("output", "ResMiniTest.rds"))
+```
+
+#### Partitioned SNPs test
+```{r Partitioned SNPs test}
+useQTL <- F # For optimization, this is cheating, but want to see if it can work
+tpSize <- 100
+
+source(here::here("code", "assessIndMrkSimilarityToPar.R"))
+
+allRes <- NULL
+for (parPair in 1:100){
+  
+parentsIdx <- sample(nFounders, 2)
+parents <- founders[parents]
+trainCand <- founders
+trainCand <- AlphaSimR::setPheno(trainCand, varE=1)
+nTrain <- AlphaSimR::nInd(trainCand)
+
+# Make progeny population
+cp <- matrix(1:2, nrow=1)
+f1 <- AlphaSimR::makeCross(parents, crossPlan=cp)
+progenyPop <- AlphaSimR::makeDH(f1, nDH=nProgeny)
+
+tpSize <- 100
+oneTrain <- sample(nTrain, tpSize) %>% sort
+
+listTrain <- list()
+for (chr in 1:nChr){
+  listTrain <- c(listTrain, list(sample(nTrain, tpSize) %>% sort))
+}
+
+predFromOne <- genPred(trainCand[oneTrain], progenyPop)
+accFromOne <- cor(predFromOne[tpSize + 1:nTest], AlphaSimR::bv(progenyPop))
+
+predFromList <- genPredMultiChr(trainCand, listTrain, progenyPop)
+accFromList <- cor(predFromList, AlphaSimR::bv(progenyPop))
+cat(accFromOne, accFromList, "\n")
+
+allRes <- rbind(allRes, c(accFromOne, accFromList))
+}
+
+  #### 
+  parentsIdx <- sample(nFounders, 2)
+  parents <- founders[parentsIdx]
+  trainCand <- founders[-parentsIdx]
+  
+  # Make progeny population
+  cp <- matrix(1:2, nrow=1)
+  f1 <- AlphaSimR::makeCross(parents, crossPlan=cp)
+  progenyPop <- AlphaSimR::makeDH(f1, nDH=nProgeny)
+
+  # Make potential training populations
+  # At random from the candidates
+  for (i in 1:5){
+    trainProgenyPop <- AlphaSimR::makeDH(f1, nDH=tpSize)
+    trainProgenyPop <- AlphaSimR::setPheno(trainProgenyPop, varE=1)
+    gblupFromSibs <- genPred(trainProgenyPop, progenyPop)
+    accFromSibs <- cor(gblupFromSibs[tpSize + 1:nProgeny], AlphaSimR::bv(progenyPop))
+    cat("Accuracy from sibs", accFromSibs, "\n")
+    tst <- trainPopUtility(trainProgenyPop, parents, useQTL=useQTL)
+    allRes <- rbind(allRes, c(parPair, 0, i, tst, accFromSibs))
+    saveRDS(allRes, file=here::here("output", "ResMiniTest.rds"))
+  }
+  for (i in 1:5){
+    trainRnd <- trainCand[sample(AlphaSimR::nInd(trainCand), tpSize)]
+    trainRnd <- AlphaSimR::setPheno(trainRnd, varE=1)
+    gblupFromRnd <- genPred(trainRnd, progenyPop)
+    accFromRnd <- cor(gblupFromRnd[tpSize + 1:nProgeny], AlphaSimR::bv(progenyPop))
+    cat("Accuracy from rand", accFromRnd, "\n")
+    tst <- trainPopUtility(trainRnd, parents, useQTL=useQTL)
+    allRes <- rbind(allRes, c(parPair, 1, i, tst, accFromRnd))
+    saveRDS(allRes, file=here::here("output", "ResMiniTest.rds"))
+  }
+  for (i in 1:5){
+    trainOpt <- optimizeTP(trainCand, parents, tpSize=tpSize, verbose=T, useQTL=useQTL, diffLenWgt=diffLenWgt, ksWgt=ksWgt, covDistWgt=covDistWgt)
+    trainOpt <- AlphaSimR::setPheno(trainOpt, varE=1)
+    gblupFromOpt <- genPred(trainOpt, progenyPop)
+    accFromOpt <- cor(gblupFromOpt[tpSize + 1:nProgeny], AlphaSimR::bv(progenyPop))
+    cat("Accuracy from opt", accFromOpt, "\n")
+    tst <- trainPopUtility(trainOpt, parents, useQTL=useQTL)
+    allRes <- rbind(allRes, c(parPair, 2, i, tst, accFromOpt))
+    saveRDS(allRes, file=here::here("output", "ResMiniTest.rds"))
+  }
+}
+colnames(allRes) <- c("parPair", "Sib0Rnd1Opt2", "rep", "sumLenSame",
+                      "diffLen", "ksUnifDistr", "distCovMat", "accuracy")
+saveRDS(allRes, file=here::here("output", "ResMiniTest.rds"))
+
+allRes <- readRDS(file=here::here("output", "ResMiniTest.rds"))
+```

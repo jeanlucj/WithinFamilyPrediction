@@ -1,0 +1,80 @@
+---
+title: "Probability that QTL is IIS conditional on a sequence of marker IIS"
+author: "Jean-Luc Jannink"
+date: "2024-09-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#### What to run from other markdowns.  
+From MakeTheFounderPopulation.Rmd
+`setup`
+`load packages`
+`set here path`
+`set random seed`
+`simulation parameters`
+`Make founder population`
+
+1. Make the population.  
+2. Repeat.  
+  i. Grab two individuals, two chromosomes per individual.  
+  ii. On each chromosome, find the minimum probability streak.  
+  iii. If there is a QTL in that streak, is it IIS between the individuals?  
+  iv. Are the probabilities of the lengths of the streaks across the chromosomes correlated?  
+
+```{r Set here base}
+here::i_am("analysis/ProbQTLIISasFuncOfMrkIIS.Rmd")
+```
+
+I have a two-chromosome population, so I might as well use that: saveGlobalEnvObj21234.rds.  
+```{r Get GlobalEnv}
+  globalEnvObj <- readRDS(here::here("output", "saveGlobalEnvObj72345.rds"))
+  for (n in names(globalEnvObj)) assign(n, globalEnvObj[[n]], envir=.GlobalEnv)
+```
+
+
+
+```{r Loop to estimate this probability}
+nInd <- AlphaSimR::nInd(founders)
+source(here::here("code", "assessIndMrkSimilarityToPar.R"))
+# probSameSame are all the probabilities needed to calculate the streak probability
+# for the founders population
+probSameSame <- calcProbSameSame(founders)
+
+allRes <- NULL
+for (indPair in 1:1000){
+  # Pick two individuals from the founders
+  twoInd <- sample(nInd, 2)
+  for (chr in 1:2){
+    mrkHaplos <- AlphaSimR::pullSnpHaplo(founders[twoInd], chr=chr)
+    nMrk <- ncol(mrkHaplos)
+    haplo1 <- mrkHaplos[1,]; haplo2 <- mrkHaplos[3,]
+    probWhere <- findPosMinProbSame(haplo1, haplo2, probSameSame[[chr]])
+    # Figure out the actual IIS streak to determine if there is a QTL there
+    mrkSame <- haplo1 == haplo2
+    endPos <- probWhere[2]
+    while (mrkSame[endPos+1]){
+      endPos <- endPos+1
+      if (endPos == nMrk) break
+    }
+    snpMap <- AlphaSimR::getSnpMap()
+    strtPos <- snpMap$pos[probWhere[2]]
+    endPos <- snpMap$pos[endPos]
+    # Are there QTL on the streak?
+    qtlMap <- AlphaSimR::getQtlMap()
+    qtlMap <- qtlMap[qtlMap$chr == chr,]
+    qtlInStreak <- which(qtlMap$pos >= strtPos & qtlMap$pos <= endPos)
+    if (length(qtlInStreak) > 0){
+      qtlRes <- rep(probWhere[1], length(qtlInStreak))
+      qtlHaplos <- AlphaSimR::pullQtlHaplo(founders[twoInd], chr=chr)
+      qtlHaplos <- qtlHaplos[c(1,3), qtlInStreak, drop=F]
+      qtlRes <- cbind(qtlRes, qtlHaplos[1,] == qtlHaplos[2,])
+      allRes <- rbind(allRes, qtlRes)
+    }
+  }#END for chr
+}#END for indPair
+```
+
