@@ -1,3 +1,3 @@
 # Code
 
-Save command-line scripts and shared R code here.
+Find IBD segments to train a model for within-family prediction.
