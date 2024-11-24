@@ -8,6 +8,24 @@ editor_options:
 ---
 
 ### Next Steps
+23 Nov 2024
+I set up a simple model to calculate the probability of a segment being as
+similar to one of the parents as it is. `calcAllPosProbSame`  The idea would be
+to choose segments that have a low probability of being similar.  The function
+to do that is `partitionMrkForBiparPred`.  At the moment, I'm not sure if it
+does it for multiple chromosomes or just one. That can be done genome wide.
+Exactly what probability will work the best is an open question.  To answer that
+question, I would use a train, tune, test approach:
+1. Separate train+tune from test
+2. Within train+tune, use tune cross validation folds to find out what cutoff
+point for similarity leads to the highest accuracy
+3. Use that tuned cutoff point to then test accuracy
+
+Not that choosing segments splits the markers to make two kernels. One kernel
+IBD to the two parents, one kernel of "the rest".  So there is also a question
+of how to weight these two kernel's predictions in coming up with an prediction
+
+
 -- You can do stepwise backwards multiple regression.  To work on the first and
 more important use case, I need to figure out if there is a way to do that with
 eliminating individuals from the training population.  How to start from 1000
