@@ -78,3 +78,8 @@ for (indPair in 1:1000){
 }#END for indPair
 ```
 
+```{r Plot allRes}
+plot(allRes)
+boxplot(qtlRes ~ V2, allRes)
+```
+

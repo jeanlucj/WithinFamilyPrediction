@@ -1,0 +1,166 @@
+---
+title: "GenericWithinFamilyPredictionWorkflow"
+author: 
+  name: "Jean-Luc Jannink"
+  affiliation: "USDA-ARS / Cornell"
+date: "Nov 27, 2024"
+output:
+  html_document:
+    fig_caption: yes
+    fig_height: 6
+    fig_width: 12
+    highlight: haddock
+    theme: cosmo
+    toc: yes
+    toc_float:
+      collapsed: no
+      toc_depth: 2
+editor_options: 
+  chunk_output_type: console
+---
+  
+<style>
+pre {
+  overflow-x: auto;
+}
+pre code {
+  word-wrap: normal;
+  white-space: pre;
+}
+</style>
+
+### Generic workflow exemplified here
+1. Set simulation parameters  
+2. Make the founder population  
+3. Split a test set off from the founder population  
+  + No individual from the test set will be used for modeling  
+  + What remains is a train-tune set  
+4. Repeat  
+  + Looping to tune model hyperparameters  
+  + Train on the train set.  Assess accuracy on the tune set  
+  + Choose the hyperparmeters using results from the tune set  
+5. Assess trained model with tuned hyperparameters on the test set  
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+knitr::opts_chunk$set(message=FALSE)
+knitr::opts_chunk$set(cache=FALSE)
+```
+
+#### Set simulation parameters  
+```{r Set simulation parameters, message=TRUE}
+here::i_am("analysis/GenericWithinFamilyPredictionWorkflow.Rmd")
+
+# Make sure you set a different random seed each time you want to do this...
+random_seed <- 72345
+set.seed(random_seed)
+
+source(here::here("code", "SetSimulationParameters.R"))
+```
+
+#### Make the founder population  
+This takes a long time, so if you have made the relevant founder population 
+already, don't do it again.  
+```{r Make founders}
+globalEnvFileName <- paste0("saveGlobalEnvObj", random_seed, ".rds")
+outputList <- list.files(path=here::here("output"), pattern="rds")
+if (!any(outputList == globalEnvFileName)){
+  source(here::here("code", "MakeTheFounderPopulation.R"))
+}
+```
+
+#### Get the global environment you want  
+```{r Get GlobalEnv}
+globalEnvObj <- readRDS(here::here("output", globalEnvFileName))
+for (n in names(globalEnvObj)) assign(n, globalEnvObj[[n]], envir=.GlobalEnv)
+```
+
+#### Split off train tune test populations (Step 3 above)  
+```{r Split train tune test pop}
+testPopIdx <- sort(sample(nFounders, nTestPop))
+testPop <- founders[testPopIdx]
+tunePopIdx <- sort(sample(nTrainPop + nTunePop, nTunePop))
+tunePop <- founders[-testPopIdx][tunePopIdx]
+trainPop <- founders[-testPopIdx][-tunePopIdx]
+```
+
+#### Functions to optimize the training population  
+```{r Train pop optim functions}
+source(here::here("code", "TrainPopOptimFunctions.R"))
+source(here::here("code", "GenomicPredictionFunctions.R"))
+```
+
+#### Implements Step 4 of the description above  
+```{r Vignette select hyperparameter vector}
+useQTL <- F # Using T would be cheating, but useful for validation
+tpSize <- 100
+nIter <- 1000
+
+# Discrete possible vectors of hyperparameters to choose from for tuning
+# A continuous (e.g., Bayesian optimization) approach could be used
+hyperparmVecs <- tibble(dlw=c(0.1, 0), ksw=c(40, 80), cdw=c(2, 4))
+nHyperparmVecs <- nrow(hyperparmVecs)
+
+allRes <- NULL
+# Choose the hyperparameters optimizing nOptim times each on a random tune pop
+for (i in 1:5){
+  tuneParIdx <- sample(nTunePop, 2)
+  tunePar <- tunePop[tuneParIdx]
+  # Make progeny population
+  cp <- matrix(1:2, nrow=1)
+  f1 <- AlphaSimR::makeCross(tunePar, crossPlan=cp)
+  progenyPop <- AlphaSimR::makeDH(f1, nDH=nProgeny)
+
+  withinTuneAcc <- NULL
+  for (hpv in 1:nHyperparmVecs){
+    diffLenWgt <- hyperparmVecs$dlw[hpv]
+    ksWgt <- hyperparmVecs$ksw[hpv]
+    covDistWgt <- hyperparmVecs$cdw[hpv]
+
+    trainOpt <- optimizeTP(trainPop, tunePar, tpSize=tpSize, 
+                           verbose=T, useQTL=useQTL, nIter=nIter,
+                           diffLenWgt=diffLenWgt, 
+                           ksWgt=ksWgt, 
+                           covDistWgt=covDistWgt)
+    trainOpt <- AlphaSimR::setPheno(trainOpt, varE=1)
+    gblupFromOpt <- genPred(trainOpt, progenyPop)
+    accFromOpt <- cor(gblupFromOpt[tpSize + 1:nProgeny],
+                      AlphaSimR::bv(progenyPop))
+    withinTuneAcc <- c(withinTuneAcc, accFromOpt)
+  }
+  allRes <- rbind(allRes, withinTuneAcc)
+}
+
+# Which is the better vector of hyperparameters?
+bestHPV <- which.max(colMeans(allRes))
+cat("Index to the best hyperparameter vector:", bestHPV, "\n")
+tunedHPV <- hyperparmVecs[bestHPV,]
+```
+
+#### Implement Step 5 above  
+```{r Test tuned hyperparameter vector}
+# Now test these tuned hyperparameters on the test population
+# Example set up here to do it once but do with multiple parent pairs
+testParIdx <- sample(nTestPop, 2)
+testPar <- testPop[testParIdx]
+# Make progeny population
+cp <- matrix(1:2, nrow=1)
+f1 <- AlphaSimR::makeCross(testPar, crossPlan=cp)
+progenyPop <- AlphaSimR::makeDH(f1, nDH=nProgeny)
+
+diffLenWgt <- tunedHPV$dlw
+ksWgt <- tunedHPV$ksw
+covDistWgt <- tunedHPV$cdw
+
+# The key is testPar here
+# I wonder if I should use some other set of candidates than trainPop+tunePop
+trainOpt <- optimizeTP(c(trainPop, tunePop), testPar, tpSize=tpSize,
+                       verbose=T, useQTL=useQTL, nIter=nIter,
+                       diffLenWgt=diffLenWgt,
+                       ksWgt=ksWgt,
+                       covDistWgt=covDistWgt)
+trainOpt <- AlphaSimR::setPheno(trainOpt, varE=1)
+gblupFromOpt <- genPred(trainOpt, progenyPop)
+accTest <- cor(gblupFromOpt[tpSize + 1:nProgeny], AlphaSimR::bv(progenyPop))
+print(accTest)
+```

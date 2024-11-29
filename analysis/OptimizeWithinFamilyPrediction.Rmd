@@ -278,10 +278,11 @@ allRes <- readRDS(file=here::here("output", "ResMiniTest.rds"))
 ```
 
 Some questions to look into:
-1. Are there some parent pairs that are lower than others both for random and opt?
+1. Are there some parent pairs that are lower than others both for random and
+opt?
 2. At the macro scale it looked like uniformity was important, what about at the
-micro scale?
-3. Does it still work if you don't include the QTL?
+micro scale?  
+3. Does it still work if you don't include the QTL?  
 ```{r Do some tests}
 print(tapply(allRes[,"accuracy"], allRes[,2], median, na.rm=T))
 print(tapply(allRes[,"accuracy"], allRes[,2], mean, na.rm=T))

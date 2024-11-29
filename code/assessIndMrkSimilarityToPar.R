@@ -79,10 +79,10 @@ calcDevFromUnif <- function(matchSeqMat, nSegSitePerChr=200){
 
 # Moving from left to right along a chromosome, if two haplotypes are the same
 # at the first locus, what probability are they the same at the second locus?
-# Calculate those probabilities for all loci and all chromosomes
-# Returns a list of two-row matrices.  The list is nChr long. The first row of
-# each matrix is if the allele at the first locus is 0, the second row is if the
-# allele is 1.
+# Calculate those probabilities for all loci and all chromosomes Returns a list
+# of three-row matrices.  The list is nChr long. The first row of each matrix is
+# the frequency of the 1 allele, the second row is if the allele at the first
+# locus is 0, the second row is if the allele is 1.
 calcProbSameSame <- function(pop, useQTL=F){
   nInd <- AlphaSimR::nInd(pop)
   nChr <- pop@nChr
@@ -156,10 +156,12 @@ findPosMinProbSame <- function(parHaplo, indHaplo, probSmSmChr){
   return(c(minProbSame, posMinProbSame))
 }
 
-# This function calculates the probabilities of all streaks of contiguous
+# This function calculates the probabilities of ALL streaks of contiguous
 # markers that are IIS. It returns the position of the streak, its length, and
-# its probability for all such streaks on a chromosome. Return matrix with three
-# columns: -log of streak probability, position of the streak, its length
+# its probability for all such streaks on a _chromosome_. Return matrix with
+# three columns: -log of streak probability, position of the streak, its length
+# Note: this also works if you want to use the QTL. Then calculate probSmSmChr
+# with useQTL=T and include QTL in parHaplo and indHaplo.
 calcAllPosProbSame <- function(parHaplo, indHaplo, probSmSmChr){
   nMrk <- length(parHaplo)
   if (nMrk != length(indHaplo))
@@ -190,19 +192,18 @@ calcAllPosProbSame <- function(parHaplo, indHaplo, probSmSmChr){
 }
 
 # Function to split markers into one matrix if they appear to be IBD with either
-# parent of a biparental and a separate matrix if they they are not. This is a
-# long shot to try to better predict within biparentals.
+# parent of a biparental and a separate matrix if they they are not.
 # pop is the overall population that has both genotypes and phenotypes
-# parents is a two vector with indices of the parents
-# thresholds is a two vector with the probabilities required to put into the one
+# parents is a two vector with indices of the parents that are assumed in pop
+# threshold is a scalar with the probability required to put into the one
 # matrix versus the other, one threshold for each parent
 # For now (29 Sept 2024) I'm going to assume all individuals are fully inbred
-partitionMrkForBiparPred <- function(pop, parents, thresholds){
+partitionMrkForBiparPred <- function(pop, parents, threshold){
   pss <- calcProbSameSame(pop)
   snpDat <- AlphaSimR::pullSnpHaplo(pop)
   nInd <- AlphaSimR::nInd(pop)
   snpMap <- AlphaSimR::getSnpMap()
-  nChr <- max(snpMap$chr)
+  nChr <- pop@nChr
   nSnp <- nrow(snpMap)
   ibdMat <- nonIbdMat <- matrix(nrow=nInd, ncol=nSnp)
   for (ind in 1:nInd){
@@ -211,11 +212,12 @@ partitionMrkForBiparPred <- function(pop, parents, thresholds){
       toIbdMat <- NULL
       for (par in 1:2){
         parIdx <- parents[par]
+        # The *2-1 calculation is to skip every other row since inbred
         chrProbs <- calcAllPosProbSame(snpDat[parIdx*2-1, chrSnp],
                                        snpDat[ind*2-1, chrSnp], pss[[chr]])
-        chrProbs <- chrProbs[chrProbs[,1] < thresholds[par],,drop=F]
+        chrProbs <- chrProbs[chrProbs[,1] < threshold,,drop=F]
         if (nrow(chrProbs) > 0){
-          for (segment in 1: nrow(chrProbs)){
+          for (segment in 1:nrow(chrProbs)){
             toIbdMat <- c(toIbdMat,
                           chrProbs[segment, 2] - 1 + 1:chrProbs[segment, 3])
           }
@@ -236,21 +238,5 @@ partitionMrkForBiparPred <- function(pop, parents, thresholds){
   }
   nonIbdMat <- apply(nonIbdMat, 2, fillNAwithMean)
   ibdMat <- apply(ibdMat, 2, fillNAwithMean)
-  return(list(nonIbdMat, ibdMat))
-}
-
-# Hmmm. I don't actually need this.
-# This is some version of BLAST (I think). I'm starting with an initial hash of
-# three markers sequences
-# haplo is a vector of 0 and 1 allelic states for markers
-makeMrkHash <- function(haplo){
-  nMrk <- length(haplo)
-  hash <- list(integer(0))
-  for (i in 1:7) hash <- c(hash, list(integer(0)))
-  for (strt in 1:(nMrk - 2)){
-    mrkSeq <- haplo[strt + 0:2]
-    idx <- 1 + mrkSeq %*% c(4, 2, 1)
-    hash[[idx]] <- c(hash[[idx]], strt)
-  }
-  return(hash)
+  return(list(ibdMat=ibdMat, nonIbdMat=nonIbdMat))
 }

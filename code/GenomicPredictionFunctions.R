@@ -72,7 +72,7 @@ genPredMultiChr <- function(allTrain, trainPopList, testPop){
 # There are two SNP matrices, one for portions of the genome that are presumed
 # IBD with the parents and one for portions that are presumed not IBD
 # This function returns the SNP effects from the ibd matrix
-genPredPartitionedSnps <- function(ibdMat, nonIbdMat, phenos){
+genPredPartitionedSnpEff <- function(ibdMat, nonIbdMat, phenos){
   require(EMMREML); require(rrBLUP)
   ibdGRM <- rrBLUP::A.mat(ibdMat*2 - 1)
   nonIbdGRM <- rrBLUP::A.mat(nonIbdMat*2 - 1)
@@ -82,6 +82,28 @@ genPredPartitionedSnps <- function(ibdMat, nonIbdMat, phenos){
   mmRes <- EMMREML::emmremlMultiKernel(y=phenos, X=fixedEff,
                                        Zlist=list(zIbd, zNonIbd),
                                        Klist=list(ibdGRM, nonIbdGRM))
-  ibdSnpEff <- t(ibdMat) %*% solve(ibdGRM + diag(1e-5, nInd)) %*% mmRes$uhat[1:nInd]
+  ibdSnpEff <- t(ibdMat) %*%
+    solve(ibdGRM + diag(1e-5, nInd)) %*%
+    mmRes$uhat[1:nInd]
   return(ibdSnpEff)
+}
+
+# Should I impute missing data in ibdMat and nonIbdMat with A.mat from rrBLUP?
+# ibdMat and nonIbdMat marker matrices calculated from partitionMrkForBiparPred
+# on the training population
+# phenos is a vector of phenotypes on the training population
+# testPop is an AlphaSimR population from a biparental cross
+genPredPartitionedRelMat <- function(ibdMat, nonIbdMat, phenos, testPop){
+  require(EMMREML); require(rrBLUP)
+  testSnp <- AlphaSimR::pullSnpGeno(testPop) - 1 # A.mat expects -1, 0, 1
+  ibdGRM <- rrBLUP::A.mat(rbind(ibdMat*2 - 1, testSnp))
+  nonIbdGRM <- rrBLUP::A.mat(rbind(nonIbdMat*2 - 1, testSnp))
+  nPheno <- length(phenos)
+  nInd <- nPheno + AlphaSimR::nInd(testPop)
+  fixedEff <- matrix(rep(1, nPheno), ncol=1)
+  zIbd <- zNonIbd <- diag(nrow=nPheno, ncol=nInd)
+  mmRes <- EMMREML::emmremlMultiKernel(y=phenos, X=fixedEff,
+                                       Zlist=list(zIbd, zNonIbd),
+                                       Klist=list(ibdGRM, nonIbdGRM))
+  return(mmRes$uhat)
 }

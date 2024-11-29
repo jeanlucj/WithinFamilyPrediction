@@ -1,0 +1,306 @@
+---
+title: "IBDSegmentWithinFamilyPrediction"
+author: 
+  name: "Jean-Luc Jannink"
+  affiliation: "USDA-ARS / Cornell"
+date: "Nov 27, 2024"
+output:
+  html_document:
+    fig_caption: yes
+    fig_height: 6
+    fig_width: 12
+    highlight: haddock
+    theme: cosmo
+    toc: yes
+    toc_float:
+      collapsed: no
+      toc_depth: 2
+editor_options: 
+  chunk_output_type: console
+---
+  
+<style>
+pre {
+  overflow-x: auto;
+}
+pre code {
+  word-wrap: normal;
+  white-space: pre;
+}
+</style>
+
+### Generic workflow exemplified here
+1. Set simulation parameters  
+2. Make the founder population  
+3. Split a test set off from the founder population  
+  + No individual from the test set will be used for modeling  
+  + What remains is a train-tune set  
+4. Repeat  
+  + Looping to tune model hyperparameters  
+  + Train on the train set.  Assess accuracy on the tune set  
+  + Choose the hyperparmeters using results from the tune set  
+5. Assess trained model with tuned hyperparameters on the test set  
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE)
+knitr::opts_chunk$set(message=FALSE)
+knitr::opts_chunk$set(cache=FALSE)
+```
+
+#### Set simulation parameters  
+```{r Set simulation parameters, message=TRUE}
+here::i_am("analysis/IBDSegmentWithinFamilyPrediction.Rmd")
+
+# Make sure you set a different random seed each time you want to do this...
+random_seed <- 72345
+set.seed(random_seed)
+
+source(here::here("code", "SetSimulationParameters.R"))
+```
+
+#### Make the founder population  
+This takes a long time, so if you have made the relevant founder population 
+already, don't do it again.  
+```{r Make founders}
+globalEnvFileName <- paste0("saveGlobalEnvObj", random_seed, ".rds")
+outputList <- list.files(path=here::here("output"), pattern="rds")
+if (!any(outputList == globalEnvFileName)){
+  source(here::here("code", "MakeTheFounderPopulation.R"))
+}
+```
+
+#### Get the global environment you want  
+```{r Get GlobalEnv}
+globalEnvObj <- readRDS(here::here("output", globalEnvFileName))
+for (n in names(globalEnvObj)) assign(n, globalEnvObj[[n]], envir=.GlobalEnv)
+```
+
+#### Split off train tune test populations (Step 3 above)  
+```{r Split train tune test pop}
+testPopIdx <- sort(sample(nFounders, nTestPop))
+testPop <- founders[testPopIdx]
+tunePopIdx <- sort(sample(nTrainPop + nTunePop, nTunePop))
+tunePop <- founders[-testPopIdx][tunePopIdx]
+trainPop <- founders[-testPopIdx][-tunePopIdx]
+```
+
+#### Functions to optimize the training population  
+```{r Train pop optim functions}
+source(here::here("code", "TrainPopOptimFunctions.R"))
+source(here::here("code", "GenomicPredictionFunctions.R"))
+source(here::here("code", "assessIndMrkSimilarityToPar.R"))
+```
+
+#### Implements Step 4 of the description above  
+  + Looping to tune model hyperparameters  
+  + Train on the train set.  Assess accuracy on the tune set  
+  + Choose the hyperparmeters using results from the tune set  
+```{r Make space filling grid, eval=FALSE}
+# OVERKILL
+# This is overkill. Right now only the threshold takes time...
+# Make parameter functions
+probSimThresh <- function(range=c(-30, -10), trans=NULL){
+  new_quant_param(type="double", range=range, trans=trans,
+    inclusive=c(TRUE, TRUE), finalize=NULL,
+    label=c(probSimThresh="Threshold when you believe segments are IBD"))
+}
+wgtIBDvsGeneral <- function(range=c(0.01, 0.99), trans=NULL){
+  new_quant_param(type="double", range=range, trans=trans,
+    inclusive=c(TRUE, TRUE), finalize=NULL,
+    label=c(wgtIBDvsGeneral="Weights to give IBD vs general kernel predictions"))
+}
+nHyperparmVecs <- 20
+hyperparmVecs <- parameters(probSimThresh(), wgtIBDvsGeneral()) |> 
+  grid_space_filling(size=nHyperparmVecs, type="max_entropy")
+hyperparmVecs <- parameters(probSimThresh()) |> 
+  grid_space_filling(size=nHyperparmVecs, type="max_entropy")
+```
+
+Cycle through the hyperparameter vectors to find the best one
+```{r Vignette select hyperparameter vector}
+useQTL <- F # Using T would be cheating, but useful for validation
+nHyperparmVecs <- 20
+probSimThreshRange <- c(-30, -10)
+rangeDiff <- diff(probSimThreshRange)
+
+hyperparmVecs <- 
+  tibble(probSimThresh=
+           seq(from=probSimThreshRange[1] + rangeDiff/2/nHyperparmVecs,
+               to=probSimThreshRange[2] - rangeDiff/2/nHyperparmVecs,
+               length.out=nHyperparmVecs))
+# Discrete possible vectors of hyperparameters to choose from for tuning
+# A continuous (e.g., Bayesian optimization) approach could be used
+allRes <- list()
+# Choose the hyperparameters optimizing nOptim times each on a random tune pop
+# Number of biparentals to check: quite a bit of variation from one to other
+nBiparFam <- 20
+for (i in 1:nBiparFam){
+  # Choose parents from tunePop
+  tuneParIdx <- sample(nTunePop, 2)
+  tunePar <- tunePop[tuneParIdx]
+  trainTune <- c(trainPop, tunePar)
+  trainTune <- AlphaSimR::setPheno(trainTune, varE=1)
+  trainPhenos <- AlphaSimR::pheno(trainTune)
+  
+  # Make progeny population
+  cp <- matrix(1:2, nrow=1)
+  f1 <- AlphaSimR::makeCross(tunePar, crossPlan=cp)
+  progenyPop <- AlphaSimR::makeDH(f1, nDH=nProgeny)
+
+  withinBiparAcc <- NULL
+  for (hpv in 1:nHyperparmVecs){
+    # Standard genomic prediction
+    randEffGen <- genPred(trainTune, progenyPop)
+
+    pst <- hyperparmVecs$probSimThresh[hpv]
+    # Get IBD and general marker matrices
+    partMrk <- partitionMrkForBiparPred(trainTune, 
+                                        parents=nTrainPop+1:2,
+                                        threshold=pst)
+    # IBD Partitioned genomic prediction
+    randEffIBD <- genPredPartitionedRelMat(partMrk$ibdMat, partMrk$nonIbdMat,
+                                trainPhenos, progenyPop)
+    # Tidy results into a matrix
+    rndEffMat <- matrix(randEffIBD, ncol=2)
+    wgtMat <- seq(from=0.1, to=0.9, length.out=9)
+    wgtMat <- rbind(wgtMat, 1 - wgtMat)
+    wgtAve <- scale(rndEffMat[nTrainPop+2 + 1:nProgeny,]) %*% wgtMat
+    resMat <- cbind(randEffGen[nTrainPop+2 + 1:nProgeny],
+                    rndEffMat[nTrainPop+2 + 1:nProgeny,],
+                    wgtAve)
+    allCor <- cor(AlphaSimR::bv(progenyPop), resMat)
+    withinBiparAcc <- rbind(withinBiparAcc, allCor)
+    cat(".")
+  }
+  cat("\n")
+  allRes <- c(allRes, list(withinBiparAcc))
+}#END Each biparental
+
+acrossBiparMeans <- Reduce("+", allRes)
+heatmap(acrossBiparMeans, Rowv=NA, Colv=NA, scale="none")
+```
+
+#### Implement Step 5 above  
+```{r Test tuned hyperparameter vector}
+# Now test these tuned hyperparameters on the test population
+# Example set up here to do it once but do with multiple parent pairs
+testParIdx <- sample(nTestPop, 2)
+testPar <- testPop[testParIdx]
+# Make progeny population
+cp <- matrix(1:2, nrow=1)
+f1 <- AlphaSimR::makeCross(testPar, crossPlan=cp)
+progenyPop <- AlphaSimR::makeDH(f1, nDH=nProgeny)
+
+diffLenWgt <- tunedHPV$dlw
+ksWgt <- tunedHPV$ksw
+covDistWgt <- tunedHPV$cdw
+
+# The key is testPar here
+# I wonder if I should use some other set of candidates than trainPop+tunePop
+trainOpt <- optimizeTP(c(trainPop, tunePop), testPar, tpSize=tpSize,
+                       verbose=T, useQTL=useQTL, nIter=nIter,
+                       diffLenWgt=diffLenWgt,
+                       ksWgt=ksWgt,
+                       covDistWgt=covDistWgt)
+trainOpt <- AlphaSimR::setPheno(trainOpt, varE=1)
+gblupFromOpt <- genPred(trainOpt, progenyPop)
+accTest <- cor(gblupFromOpt[tpSize + 1:nProgeny], AlphaSimR::bv(progenyPop))
+print(accTest)
+```
+
+### Exploratory phase  
+#### Probabilites of IBD segments  
+I have a function to calculate a simple probability of IBD between segments.  
+What is the distribution of those probabilities?  
+```{r Explore probs of IBD segments}
+calcIISSegmentProbDistrib <- function(pop, parIdx){
+  pss <- calcProbSameSame(pop)
+  snpDat <- AlphaSimR::pullSnpHaplo(pop)
+  nInd <- AlphaSimR::nInd(pop)
+  snpMap <- AlphaSimR::getSnpMap()
+  nChr <- max(snpMap$chr)
+  nSnp <- nrow(snpMap)
+  allRes <- NULL
+  for (ind in (1:nInd)[-parIdx]){
+    for (chr in 1:nChr){
+      chrSnp <- which(snpMap$chr == chr)
+      chrProbs <- calcAllPosProbSame(snpDat[parIdx*2-1, chrSnp],
+                                     snpDat[ind*2-1, chrSnp], pss[[chr]])
+      allRes <- rbind(allRes, data.frame(ind=ind, chr=chr, chrProbs))
+    }#END chr
+  }#END ind
+  return(allRes)
+}
+
+randInd <- sort(sample(nTunePop, 20))
+probs <- list()
+for (parIdx in randInd){
+  tst <- calcIISSegmentProbDistrib(tunePop, parIdx)
+  # probs <- c(probs, list(tst$X1))
+  probs <- c(probs, list(tst))
+}
+med <- sapply(probs, function(v) return(median(v[v < -10])))
+n <- sapply(probs, function(v) return(length(v[v < -10])))
+```
+
+```{r Plots with probs}
+orderProbs <- function(tst){
+  to <- tst[order(tst$X1),]
+  to$cs <- cumsum(to$X3)
+  plot(to$X1[to$X1 < -5], log(to$cs[to$X1 < -5]))
+  return(to)
+}
+probsOrd <- lapply(probs, orderProbs)
+```
+
+#### Test the genomic prediciton algorithm  
+```{r Test pred with IBD}
+# Choose parents from tunePop
+parIdx <- sample(nTunePop, 2)
+parents <- tunePop[parIdx]
+trainTune <- c(trainPop, parents)
+# Get IBD and general kernels
+# partitionMrkForBiparPred <- function(pop, parents, threshold)
+partMrk <- partitionMrkForBiparPred(trainTune, parents=nTrainPop+1:2,
+                                    threshold=-10)
+# Make progeny to predict
+# genPredPartitionedRelMat <- function(ibdMat, nonIbdMat, phenos, testPop)
+cp <- matrix(1:2, nrow=1)
+f1 <- AlphaSimR::makeCross(parents, crossPlan=cp)
+progenyPop <- AlphaSimR::makeDH(f1, nDH=nProgeny)
+trainTune <- AlphaSimR::setPheno(trainTune, varE=1)
+trainPhenos <- AlphaSimR::pheno(trainTune)
+randEffGen <- genPred(trainTune, progenyPop)
+randEffIBD <- genPredPartitionedRelMat(partMrk$ibdMat, partMrk$nonIbdMat,
+                                trainPhenos, progenyPop)
+rndEffMat <- matrix(randEffIBD, ncol=2)
+plot(rndEffMat[1:(nTrainPop+2),])
+cor(rndEffMat[1:(nTrainPop+2),]) |> print()
+plot(rndEffMat[nTrainPop+2 + 1:nProgeny,])
+cor(rndEffMat[nTrainPop+2 + 1:nProgeny,]) |> print()
+resMat <- cbind(AlphaSimR::bv(progenyPop), 
+                randEffGen[nTrainPop+2 + 1:nProgeny],
+                rndEffMat[nTrainPop+2 + 1:nProgeny,])
+wgtAve <- scale(resMat[,-(1:2)]) %*% matrix(c(0.2, 0.8, 0.5, 0.5, 0.8, 0.2), ncol=3)
+resMat <- cbind(resMat, wgtAve) 
+cor(resMat) |> print()
+```
+
+#### Figure out how to use grid_space_filling
+```{r Test grid_space_filling}
+# Make parameter functions
+probSimThresh <- function(range=c(-30, -10), trans=transform_log()){
+  new_quant_param(type="double", range=range, trans=trans,
+    inclusive=c(TRUE, TRUE), finalize=NULL,
+    label=c(probSimThresh="Threshold when you believe segments are IBD"))
+}
+wgtIBDvsGeneral <- function(range=c(0.01, 0.99), trans=NULL){
+  new_quant_param(type="double", range=range, trans=trans,
+    inclusive=c(TRUE, TRUE), finalize=NULL,
+    label=c(wgtIBDvsGeneral="Weights to give IBD vs general kernel predictions"))
+}
+tst <- parameters(probSimThresh(), wgtIBDvsGeneral()) |> 
+  grid_space_filling(size=100, type="latin_hypercube")
+plot(log(tst$probSimThresh), tst$wgtIBDvsGeneral)
+```
+
